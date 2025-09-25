@@ -91,9 +91,9 @@ def classify():
 def home():
     return jsonify({"status": "ok", "message": "API running."})
 
-# ---------------------
-# Run the app
-# ---------------------
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# # ---------------------
+# # Run the app
+# # ---------------------
+# if __name__ == "__main__":
+#     port = int(os.environ.get("PORT", 5000))
+#     app.run(host="0.0.0.0", port=port)
