@@ -1,19 +1,6 @@
-# requirements.txt
-
-# Core server
-flask==3.0.3
-flask-cors==4.0.1
-
-# Machine learning
-torch==2.2.2
-torchvision==0.17.2
-transformers==4.41.2
-
-# Image handling
-pillow==10.3.0
-
-# Vector database
-chromadb==0.5.3
-
-# Fix protobuf compatibility
-protobuf==3.20.3
+flask
+flask-cors
+torch
+transformers
+chromadb
+Pillow
