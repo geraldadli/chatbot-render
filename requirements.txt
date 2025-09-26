@@ -5,3 +5,5 @@ transformers
 chromadb
 Pillow
 streamlit
+langchain_ollama
+langchain

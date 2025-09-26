@@ -1,99 +1,97 @@
 import os
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import streamlit as st
 from PIL import Image
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, CLIPProcessor, CLIPModel
+from transformers import CLIPProcessor, CLIPModel
 import chromadb
+from langchain_ollama import ChatOllama
+from langchain.schema import HumanMessage
 
-# ---------------------
-# Configuration
-# ---------------------
-MODEL_NAME = "fxmarty/small-llama-testing"  # small HF model
+# -----------------------------
+# Config
+# -----------------------------
+OLLAMA_MODEL = "llama3.2"  # small model installed via Ollama
 CHROMA_DIR = "./chroma_db"
 COLLECTION_NAME = "image_classifications"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+clip_device = device
 
-# ---------------------
-# Load LLaMA small model
-# ---------------------
-print("Loading LLaMA model...")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForCausalLM.from_pretrained(MODEL_NAME).to(device)
-print("LLaMA model loaded.")
+# -----------------------------
+# Load ChatOllama
+# -----------------------------
+@st.cache_resource(show_spinner=True)
+def load_chat_model():
+    chat = ChatOllama(model=OLLAMA_MODEL)
+    return chat
 
-# ---------------------
-# Initialize Flask app
-# ---------------------
-app = Flask(__name__)
-CORS(app)
+chat_model = load_chat_model()
 
-# ---------------------
-# Initialize ChromaDB
-# ---------------------
-client = chromadb.PersistentClient(path=CHROMA_DIR)
-collection = client.get_or_create_collection(name=COLLECTION_NAME)
+# -----------------------------
+# Load CLIP model
+# -----------------------------
+@st.cache_resource(show_spinner=True)
+def load_clip_model():
+    clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(clip_device)
+    clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    return clip_processor, clip_model
 
-# ---------------------
-# Load CLIP model for image embeddings
-# ---------------------
-clip_device = "cuda" if torch.cuda.is_available() else "cpu"
-clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(clip_device)
-clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+clip_processor, clip_model = load_clip_model()
 
-# ---------------------
-# Chat endpoint
-# ---------------------
-@app.route("/chat", methods=["POST"])
-def chat():
-    data = request.get_json()
-    prompt = data.get("prompt")
-    if not prompt:
-        return jsonify({"error": "No prompt provided"}), 400
+# -----------------------------
+# Load ChromaDB
+# -----------------------------
+@st.cache_resource
+def load_chroma():
+    client = chromadb.PersistentClient(path=CHROMA_DIR)
+    collection = client.get_or_create_collection(name=COLLECTION_NAME)
+    return collection
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=100)
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return jsonify({"response": response})
+collection = load_chroma()
 
-# ---------------------
-# Image classification endpoint
-# ---------------------
-@app.route("/classify", methods=["POST"])
-def classify():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+st.title("Ollama Chat + Image Classification")
 
-    file = request.files["file"]
-    img = Image.open(file).convert("RGB")
+mode = st.radio("Choose mode:", ["Chat", "Image Classification"])
 
-    inputs = clip_processor(images=img, return_tensors="pt").to(clip_device)
-    with torch.no_grad():
-        img_emb = clip_model.get_image_features(**inputs).cpu().squeeze().tolist()
+# -----------------------------
+# Chat interface
+# -----------------------------
+if mode == "Chat":
+    user_input = st.text_area("Enter your prompt:")
+    if st.button("Send"):
+        if user_input:
+            # Wrap user input as HumanMessage
+            resp = chat_model.generate([[HumanMessage(content=user_input)]])
+            # Correctly access text
+            text_output = resp.generations[0][0].text
+            st.success(text_output)
+        else:
+            st.warning("Please enter a prompt.")
 
-    res = collection.query(query_embeddings=[img_emb], n_results=5, include=["metadatas"])
-    neighbors = res.get("metadatas", [[]])[0]
+# -----------------------------
+# Image classification interface
+# -----------------------------
+elif mode == "Image Classification":
+    uploaded_file = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
+    if uploaded_file:
+        img = Image.open(uploaded_file).convert("RGB")
+        st.image(img, caption="Uploaded Image", use_column_width=True)
 
-    if not neighbors:
-        return jsonify({"result": "Unknown"})
+        inputs = clip_processor(images=img, return_tensors="pt")
+        inputs = {k: v.to(clip_device) for k, v in inputs.items()}  # move tensors to GPU if available
+        with torch.no_grad():
+            img_emb = clip_model.get_image_features(**inputs).cpu().squeeze().tolist()
 
-    labels = [m["label"] for m in neighbors if "label" in m]
-    prediction = max(set(labels), key=labels.count)
+        res = collection.query(query_embeddings=[img_emb], n_results=5, include=["metadatas"])
+        neighbors = res.get("metadatas", [[]])[0]
 
-    return jsonify({"result": prediction, "neighbors": neighbors})
-
-# ---------------------
-# Health check endpoint
-# ---------------------
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"status": "ok", "message": "API running."})
-
-# # ---------------------
-# # Run the app
-# # ---------------------
-# if __name__ == "__main__":
-#     port = int(os.environ.get("PORT", 5000))
-#     app.run(host="0.0.0.0", port=port)
+        if not neighbors:
+            st.warning("Result: Unknown")
+        else:
+            labels = [m["label"] for m in neighbors if "label" in m]
+            prediction = max(set(labels), key=labels.count)
+            st.success(f"Prediction: {prediction}")
+            st.json(neighbors)
